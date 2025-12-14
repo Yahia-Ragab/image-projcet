@@ -3,16 +3,26 @@ import numpy as np
 from collections import Counter
 import heapq
 import math
+import os
 from ip import IP
 
 class Compress(IP):
-    def __init__(self, path, resize_factor=0.9):
+    def __init__(self, path, resize_factor=1.0):
         super().__init__(path)
-        h, w = self.img.shape[:2]
-        new_h, new_w = max(1, int(h * resize_factor)), max(1, int(w * resize_factor))
-        self.img = cv2.resize(self.img, (new_w, new_h), interpolation=cv2.INTER_AREA)
+        self.original_img = self.img.copy()
+        # Keep original dimensions by default; allow optional downscale.
+        if resize_factor != 1.0:
+            h, w = self.img.shape[:2]
+            new_h = max(1, int(h * resize_factor))
+            new_w = max(1, int(w * resize_factor))
+            self.img = cv2.resize(self.img, (new_w, new_h), interpolation=cv2.INTER_AREA)
         self.gray_img = self._to_gray_uint8()
         self.data = self.gray_img.flatten().tolist()
+        try:
+            self.original_size_bits = os.path.getsize(path) * 8
+        except OSError:
+            # Fallback to raw pixel estimate if file size is unavailable.
+            self.original_size_bits = self.original_img.size * self.original_img.itemsize * 8
 
     def _to_gray_uint8(self):
         if self.img.ndim == 3:
@@ -167,6 +177,25 @@ class Compress(IP):
             img = out
         return img
 
+    def jpeg_compress(self, quality=75, resize_factor=None):
+        """Encode the image to JPEG so we can report real file sizes."""
+        img = self.original_img
+        if resize_factor is not None and resize_factor != 1.0:
+            h, w = img.shape[:2]
+            new_h = max(1, int(h * resize_factor))
+            new_w = max(1, int(w * resize_factor))
+            img = cv2.resize(img, (new_w, new_h), interpolation=cv2.INTER_AREA)
+
+        q = int(np.clip(quality, 1, 100))
+        ok, encoded = cv2.imencode(".jpg", img, [int(cv2.IMWRITE_JPEG_QUALITY), q])
+        if not ok:
+            raise ValueError("Failed to encode JPEG")
+
+        compressed_bytes = encoded.tobytes()
+        stats = self.get_compression_stats(compressed_bytes, original_bits=self.original_size_bits)
+        decoded = cv2.imdecode(encoded, cv2.IMREAD_UNCHANGED)
+        return decoded, compressed_bytes, stats
+
     def get_compression_stats(self, encoded_data, original_bits=None):
         if original_bits is None:
             original_bits = len(self.data) * 8
@@ -182,6 +211,8 @@ class Compress(IP):
                 compressed_bits = len(encoded_data) * bits
             else:
                 compressed_bits = original_bits
+        elif isinstance(encoded_data, (bytes, bytearray)):
+            compressed_bits = len(encoded_data) * 8
         elif isinstance(encoded_data, np.ndarray):
             compressed_bits = encoded_data.size * 32
         else:
@@ -194,4 +225,3 @@ class Compress(IP):
             "compression_ratio": round(ratio, 2),
             "space_saving": round(saving, 2),
         }
-

@@ -3,14 +3,14 @@ import numpy as np
 from ip import IP
 
 class Filter(IP):
-    def __init__(self, path):
-        super().__init__(path)
+    def init(self, path):
+        super().init(path)
 
     def to_gray(self):
         return cv2.cvtColor(self.img, cv2.COLOR_BGR2GRAY)
 
     def to_blur(self, k=19,sigma=3):
-        return cv2.GaussianBlur(self.img, (k, k), 3)
+        return cv2.GaussianBlur(self.img, (k, k), sigma)
 
     def median(self,k=7):
         return cv2.medianBlur(self.img,k)
@@ -39,7 +39,7 @@ class Filter(IP):
         return cv2.filter2D(self.img, -1, kernel)
 
     def to_binary(self):
-        gray = self.to_gray()
+        gray = self.togray()
         avg = gray.mean()
         _, result = cv2.threshold(gray, avg, 255, cv2.THRESH_BINARY)
         return result, avg

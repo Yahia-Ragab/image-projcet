@@ -6,6 +6,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtGui import QPixmap, QImage
 from PyQt6.QtCore import Qt
 import cv2
+import numpy as np
 from filter import Filter
 from transformation import Transformation
 from resize import Resize
@@ -26,6 +27,8 @@ class ImageDropWindow(QWidget):
         self.resized_img = None
         self.compressed_data = None
         self.compression_method = None
+        self.compressed_image = None
+        self.compressed_image = None
         
         self.last_filter_choice = "None"
         self.last_filter_params = {}
@@ -160,7 +163,7 @@ class ImageDropWindow(QWidget):
 
         self.combo_compress = QComboBox()
         self.combo_compress.addItems([
-            "None", "Huffman", "Golomb-Rice", "Arithmetic", "LZW", 
+            "None", "JPEG", "Huffman", "Golomb-Rice", "Arithmetic", "LZW", 
             "RLE", "Symbol-Based", "Bit-Plane", "DCT", "Predictive", "Wavelet"
         ])
         self.combo_compress.currentTextChanged.connect(self.show_compress_inputs)
@@ -208,6 +211,12 @@ class ImageDropWindow(QWidget):
         main.addLayout(right_layout, 3)
         self.setLayout(main)
 
+    def clear_compression_state(self):
+        """Drop any cached compression results so new edits don't reuse them."""
+        self.compressed_data = None
+        self.compressed_image = None
+        self.compression_method = None
+
     def reset_all(self):
         """Reset all settings but keep the original image displayed"""
         if not self.current_image_path:
@@ -216,9 +225,8 @@ class ImageDropWindow(QWidget):
         # Reset processing results
         self.transformed_img = None
         self.resized_img = None
-        self.compressed_data = None
-        self.compression_method = None
-        
+        self.clear_compression_state()
+
         self.last_filter_choice = "None"
         self.last_filter_params = {}
         self.last_resize_choice = "None"
@@ -246,7 +254,8 @@ class ImageDropWindow(QWidget):
         """Apply or remove grayscale filter"""
         if not self.current_image_path:
             return
-            
+
+        self.clear_compression_state()
         if state == Qt.CheckState.Checked.value:
             f = Filter(self.current_image_path)
             self.filtered_img = f.to_gray()
@@ -305,6 +314,7 @@ class ImageDropWindow(QWidget):
             img = cv2.imread(path)
             if img is not None:
                 self.image_height, self.image_width = img.shape[:2]
+            self.clear_compression_state()
             
             scaled1 = pix.scaled(self.drop_label.size(), Qt.AspectRatioMode.KeepAspectRatio)
             scaled2 = pix.scaled(self.preview_label.size(), Qt.AspectRatioMode.KeepAspectRatio)
@@ -358,6 +368,7 @@ class ImageDropWindow(QWidget):
         if not self.current_image_path:
             return
 
+        self.clear_compression_state()
         # Get base image (with or without grayscale)
         if self.grayscale_checkbox.isChecked():
             f = Filter(self.current_image_path)
@@ -511,6 +522,7 @@ class ImageDropWindow(QWidget):
         if not self.current_image_path or base_img is None:
             return
 
+        self.clear_compression_state()
         temp_path = "/tmp/temp_for_resize.png"
         cv2.imwrite(temp_path, base_img)
 
@@ -624,6 +636,7 @@ class ImageDropWindow(QWidget):
         if base_img is None:
             return
 
+        self.clear_compression_state()
         temp_path = "/tmp/temp_filtered.png"
         cv2.imwrite(temp_path, base_img)
 
@@ -774,7 +787,12 @@ Channels: {channels}
         
         choice = self.combo_compress.currentText()
         
-        if choice == "Golomb-Rice":
+        if choice == "JPEG":
+            self.compress_input1.setPlaceholderText("Resize factor (0.1-1.0, optional)")
+            self.compress_input2.setPlaceholderText("Quality (1-100, default 75)")
+            self.compress_input1.show()
+            self.compress_input2.show()
+        elif choice == "Golomb-Rice":
             self.compress_input1.setPlaceholderText("M (power of 2, e.g., 4)")
             self.compress_input1.show()
         elif choice == "DCT":
@@ -807,11 +825,31 @@ Channels: {channels}
             temp_path = "/tmp/temp_compress.png"
             cv2.imwrite(temp_path, current_img)
         
+        self.clear_compression_state()
         try:
             comp = Compress(temp_path)
             choice = self.combo_compress.currentText()
             
-            if choice == "Huffman":
+            if choice == "JPEG":
+                quality = int(self.compress_input2.text()) if self.compress_input2.text() else 75
+                resize_factor = float(self.compress_input1.text()) if self.compress_input1.text() else 1.0
+                resize_factor = max(0.1, min(resize_factor, 1.0))
+                decoded, compressed_bytes, stats = comp.jpeg_compress(quality=quality, resize_factor=resize_factor)
+                self.compressed_data = compressed_bytes
+                self.compressed_image = decoded
+                self.compression_method = "jpeg"
+                self.preview_label.setPixmap(
+                    self.cv_to_pixmap(decoded).scaled(self.preview_label.size(), Qt.AspectRatioMode.KeepAspectRatio)
+                )
+                self.info_display.setText(
+                    f"COMPRESSION: JPEG\nQuality: {quality}\nResize Factor: {resize_factor}\n"
+                    f"Original Bits: {stats['original_bits']}\n"
+                    f"Compressed Bits: {stats['compressed_bits']}\n"
+                    f"Compression Ratio: {stats['compression_ratio']}:1\n"
+                    f"Space Saving: {stats['space_saving']}%"
+                )
+                
+            elif choice == "Huffman":
                 encoded, huff_map = comp.huffman()
                 stats = comp.get_compression_stats(encoded)
                 self.compressed_data = (encoded, huff_map)
@@ -944,11 +982,13 @@ Channels: {channels}
         if not path:
             return
 
-        current_img = self.transformed_img or self.resized_img or self.filtered_img
+        current_img = self.compressed_image or self.transformed_img or self.resized_img or self.filtered_img
 
         if path.endswith('.npy'):
             if self.compressed_data is not None:
-                if isinstance(self.compressed_data, tuple):
+                if self.compression_method == "jpeg" and isinstance(self.compressed_data, (bytes, bytearray)):
+                    np.save(path, np.frombuffer(self.compressed_data, dtype=np.uint8))
+                elif isinstance(self.compressed_data, tuple):
                     np.save(path, self.compressed_data[0])
                 else:
                     np.save(path, self.compressed_data)
@@ -957,17 +997,18 @@ Channels: {channels}
         else:
             if not path.lower().endswith('.jpg'):
                 path += '.jpg'
-            if self.compressed_data is not None:
-                if self.compression_method in ["bitplane", "predictive", "wavelet", "dct"]:
-                    img_to_save = np.uint8(np.clip(self.compressed_data, 0, 255))
-                else:
-                    img_to_save = current_img
+            if self.compression_method == "jpeg" and isinstance(self.compressed_data, (bytes, bytearray)):
+                with open(path, "wb") as f:
+                    f.write(self.compressed_data)
+                return
+
+            if self.compressed_data is not None and self.compression_method in ["bitplane", "predictive", "wavelet", "dct"]:
+                img_to_save = np.uint8(np.clip(self.compressed_data, 0, 255))
             else:
                 img_to_save = current_img
 
             if img_to_save is not None:
-                import cv2
-                cv2.imwrite(path, img_to_save)
+                cv2.imwrite(path, img_to_save, [int(cv2.IMWRITE_JPEG_QUALITY), 85])
 
 app = QApplication(sys.argv)
 window = ImageDropWindow()
