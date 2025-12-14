@@ -28,7 +28,6 @@ class ImageDropWindow(QWidget):
         self.compressed_data = None
         self.compression_method = None
         self.compressed_image = None
-        self.compressed_image = None
         
         self.last_filter_choice = "None"
         self.last_filter_params = {}
@@ -697,6 +696,9 @@ class ImageDropWindow(QWidget):
                 self.filtered_img if self.filtered_img is not None else None
             )
         )
+        # Force grayscale before any compression to avoid channel bloat.
+        if current_img is not None and len(current_img.shape) == 3:
+            current_img = cv2.cvtColor(current_img, cv2.COLOR_BGR2GRAY)
 
         if current_img is None:
             temp_path = self.current_image_path
@@ -815,6 +817,9 @@ Channels: {channels}
                 self.filtered_img if self.filtered_img is not None else None
             )
         )
+        # Enforce grayscale before compression to avoid channel bloat and larger files.
+        if current_img is not None and len(current_img.shape) == 3:
+            current_img = cv2.cvtColor(current_img, cv2.COLOR_BGR2GRAY)
         
         if current_img is None and not self.current_image_path:
             return
@@ -855,11 +860,12 @@ Channels: {channels}
                 self.compressed_data = (encoded, huff_map)
                 self.compression_method = "huffman"
                 preview = encoded[:200] + "..." if len(encoded) > 200 else encoded
+                note = "Note: Huffman is not reducing size for this image." if stats["compression_ratio"] < 1 else ""
                 self.info_display.setText(
                     f"COMPRESSION: Huffman\nOriginal Bits: {stats['original_bits']}\n"
                     f"Compressed Bits: {stats['compressed_bits']}\n"
                     f"Compression Ratio: {stats['compression_ratio']}:1\n"
-                    f"Space Saving: {stats['space_saving']}%\nHuffman Codes (sample):\n"
+                    f"Space Saving: {stats['space_saving']}%\n{note}\nHuffman Codes (sample):\n"
                     f"{str(dict(list(huff_map.items())[:10]))}\nEncoded Data (preview): {preview}"
                 )
                 
@@ -1008,7 +1014,8 @@ Channels: {channels}
                 img_to_save = current_img
 
             if img_to_save is not None:
-                cv2.imwrite(path, img_to_save, [int(cv2.IMWRITE_JPEG_QUALITY), 85])
+                # Default to a modest JPEG quality to avoid larger-than-original saves.
+                cv2.imwrite(path, img_to_save, [int(cv2.IMWRITE_JPEG_QUALITY), 75])
 
 app = QApplication(sys.argv)
 window = ImageDropWindow()
